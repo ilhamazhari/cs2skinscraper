@@ -1,95 +1,146 @@
+console.log('[CONTENT.JS] File loaded and executed at ' + new Date().toISOString());
+
+function getWearName(wear) { /* same */ }
+function getFloatRange(wear) { /* same */ }
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === 'scrapeThisPage') {
+    console.log('Received scrape message for URL:', msg.url);
     const url = msg.url;
-    let itemName = document.title || 'Unknown Item';
-    let price = null;
-    let currency = 'USD'; // Default
-    const marketplace = getMarketplaceName(url);
+    const marketplace = msg.marketplace;
+    const targetItem = msg.itemName;
+    const targetWear = getWearName(msg.wear);
+    const { min: minF, max: maxF } = getFloatRange(msg.wear);
 
-    const maxRetries = 3;
+    let itemName = document.title.trim() || targetItem;
+    let price = null;
+    let currency = '$'; // Default; detect later
+
+    const maxRetries = 5;
     let retryCount = 0;
 
     const scrapeWithRetry = () => {
-      const timeout = setTimeout(() => {
-        console.error('Timeout on', url);
+      console.log(`Starting scrape attempt ${retryCount + 1} for ${marketplace}`);
+      const timeoutId = setTimeout(() => {
+        console.error('Scrape timeout on', url);
         if (retryCount < maxRetries) {
           retryCount++;
-          console.log(`Retrying scrape (${retryCount}/${maxRetries})...`);
+          console.log(`Retrying (${retryCount}/${maxRetries})...`);
           scrapeWithRetry();
         } else {
-          sendError('Scrape timeout after retries', url);
+          sendError('Timeout after retries', url);
         }
-      }, 10000);
+      }, 10000); // 20s timeout
 
-      const checkPrice = setInterval(() => {
-        let priceElement = null;
-        // ... (same site-specific logic as before)
-
-        if (priceElement) {
-          clearInterval(checkPrice);
-          clearTimeout(timeout);
-          const priceText = priceElement.innerText.trim();
-          price = parseFloat(priceText.replace(/[^0-9.]/g, ''));
-          if (isNaN(price)) {
-            sendError('Invalid price format', url);
-            return;
-          }
-
-          const data = {
-            marketplace,
-            itemName,
-            price,
-            currency,
-            url,
-            lastUpdate: new Date().toISOString()
-          };
-
-          // Send to server with fetch (instead of runtime message for now)
-          fetch('http://localhost:3000/scrape', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-          })
-          .then(response => {
-            if (!response.ok) throw new Error('Server error: ' + response.status);
-            return response.json();
-          })
-          .then(result => {
-            console.log('Data sent successfully:', result);
-            chrome.runtime.sendMessage({ action: 'scrapeSuccess', url });
-          })
-          .catch(err => {
-            console.error('Network error sending data:', err);
-            if (retryCount < maxRetries) {
-              retryCount++;
-              console.log(`Retrying send (${retryCount}/${maxRetries})...`);
-              scrapeWithRetry(); // Retry whole scrape if needed
-            } else {
-              sendError('Failed to send data after retries', url);
-            }
-          });
+      // MutationObserver to wait for dynamic content
+      const observer = new MutationObserver(() => {
+        console.log('DOM mutation detected; checking for prices');
+        if (tryScrape()) {
+          observer.disconnect();
+          clearTimeout(timeoutId);
         }
-      }, 500);
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      // Initial check
+      if (tryScrape()) {
+        observer.disconnect();
+        clearTimeout(timeoutId);
+      }
     };
+
+    function tryScrape() {
+      let priceElement = null;
+      let priceText = '';
+
+      // Site-specific selectors (update based on DevTools)
+      if (marketplace === 'steam') {
+        priceElement = document.querySelector('.market_listing_price_with_fee'); // Lowest sell price
+      } else if (marketplace === 'waxpeer') {
+        priceElement = document.querySelector('.item-price, .price'); // Common
+      } else if (marketplace === 'skinbaron') {
+        priceElement = document.querySelector('.price, span.price'); // Inspect for .offer-price or similar
+      } else if (marketplace === 'csmoney') {
+        priceElement = document.querySelector('.item-price, .cs-money-price'); // Card prices
+      } // Add for others: avan: '.price-block', white: '.market-item-price', etc.
+
+      if (priceElement) {
+        priceText = priceElement.innerText.trim();
+      } else {
+        // Fallback: Parse all listings for min price matching item/wear
+        console.log('No direct selector; parsing listings');
+        const listings = document.querySelectorAll('.listing, .item, .offer, .market-row, div[class*="price"]'); // Common classes
+        let minPrice = Infinity;
+        listings.forEach(el => {
+          const elItem = el.querySelector('.name, h3, .item-name')?.innerText?.trim() || '';
+          const elWear = el.querySelector('.wear, .exterior')?.innerText?.toLowerCase() || '';
+          const elFloat = parseFloat(el.querySelector('.float')?.innerText || 'NaN');
+          const elPriceText = el.querySelector('.price, .item-price, span.money')?.innerText?.trim() || '';
+          const elP = parseFloat(elPriceText.replace(/[^0-9.]/g, ''));
+
+          if (elItem.includes(targetItem) && 
+              (targetWear === '' || elWear.includes(targetWear.toLowerCase())) &&
+              (!isNaN(elFloat) ? (elFloat >= minF && elFloat <= maxF) : true) &&
+              !isNaN(elP) && elP < minPrice) {
+            minPrice = elP;
+            priceText = elPriceText;
+            itemName = elItem;
+          }
+          console.log(`Checked listing: ${elItem} | Wear: ${elWear} | Float: ${elFloat} | Price: ${elP}`);
+        });
+        if (minPrice !== Infinity) {
+          price = minPrice;
+        } else {
+          console.log('No matching listings found');
+          return false;
+        }
+      }
+
+      if (priceText) {
+        price = parseFloat(priceText.replace(/[^0-9.]/g, ''));
+        if (isNaN(price)) {
+          sendError('Invalid price format', url);
+          return false;
+        }
+        currency = /\$/.test(priceText) ? '$' : /€/.test(priceText) ? '€' : /¥/.test(priceText) ? '¥' : '$';
+        console.log(`Found price: ${price} ${currency} for ${itemName}`);
+
+        const data = {
+          marketplace,
+          itemName,
+          price,
+          currency,
+          url,
+          lastUpdate: new Date().toISOString()
+        };
+
+        fetch('http://localhost:3000/scrape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        })
+        .then(res => res.json())
+        .then(result => console.log('Data sent:', result))
+        .catch(err => {
+          console.error('Fetch error:', err);
+          if (retryCount < maxRetries) {
+            retryCount++;
+            scrapeWithRetry();
+          } else {
+            sendError('Failed to send data', url);
+          }
+        });
+
+        return true; // Success
+      }
+      return false; // Not yet
+    }
 
     scrapeWithRetry();
   }
 });
 
 function sendError(message, url) {
+  console.error(`Error: ${message} on ${url}`);
   chrome.runtime.sendMessage({ action: 'scrapeError', message, url });
-}
-
-function getMarketplaceName(url) {
-  if (url.includes('steamcommunity.com')) return 'Steam';
-  if (url.includes('avan.market')) return 'Avan Market';
-  if (url.includes('c5game.com')) return 'C5Game';
-  if (url.includes('white.market')) return 'White Market';
-  if (url.includes('waxpeer.com')) return 'Waxpeer';
-  if (url.includes('skinbaron.de')) return 'SkinBaron';
-  if (url.includes('shadowpay.com')) return 'ShadowPay';
-  if (url.includes('gamerpay.gg')) return 'GamerPay';
-  if (url.includes('cs.money')) return 'CS.Money';
-  if (url.includes('cs.deals')) return 'CS.Deals';
-  return 'Unknown';
 }

@@ -23,7 +23,7 @@
     "default_popup": "popup.html"
   },
   "content_scripts": [{
-    "matches": ["<all_urls>"],
+    "matches": ["https://*.steamcommunity.com/*", "https://*.waxpeer.com/*", "https://*.cs.money/*", "https://*.cs.deals/*", "https://*.avan.market/*", "https://*.c5game.com/*", "https://*.white.market/*", "https://*.skinbaron.de/*", "https://*.shadowpay.com/*", "https://*.gamerpay.gg/*", "https://raw.githubusercontent.com/*"],
     "js": ["content.js"],
     "run_at": "document_end"
   }]

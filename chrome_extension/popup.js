@@ -97,5 +97,7 @@ document.getElementById('scrapeBtn').addEventListener('click', () => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.action === 'scrapeComplete') {
     document.getElementById('status').textContent = 'Scraping complete! Check server console.';
+  } else if (msg.action === 'scrapeError') {
+    document.getElementById('status').textContent += `\nError on ${msg.url}: ${msg.message}`;
   }
 });

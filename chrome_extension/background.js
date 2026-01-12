@@ -1,3 +1,5 @@
+// background.js
+
 const marketplaceBuilders = {
   steam: (item, wear) => {
     const wearName = getWearName(wear);
@@ -12,15 +14,14 @@ const marketplaceBuilders = {
     return `https://www.c5game.com/en/csgo?keywords=${encodeURIComponent(item)}&exterior=${wearName}`;
   },
   white: (item, wear) => {
-    const exteriorCode = getExteriorCode(wear, 'white'); // e.g., e0 for FN
+    const exteriorCode = getExteriorCode(wear, 'white');
     return `https://white.market/market?name=${encodeURIComponent(item)}&sort=pr_a&unique=false&exterior=${exteriorCode}`;
   },
   waxpeer: (item, wear) => {
-    const exterior = getWearCode(wear); // FN, MW, etc.
+    const exterior = getWearCode(wear);
     return `https://waxpeer.com/r/dadscap?all=0&search=${encodeURIComponent(item)}&exterior=${exterior}`;
   },
   skinbaron: (item, wear) => {
-    // Wear filtered on page; base search
     return `https://skinbaron.de/en/csgo?str=${encodeURIComponent(item)}&sort=PA`;
   },
   shadowpay: (item, wear) => {
@@ -36,13 +37,20 @@ const marketplaceBuilders = {
     return `https://cs.money/market/buy/?limit=60&offset=0&name=${encodeURIComponent(item)}&order=asc&sort=price&exterior=${exterior}`;
   },
   csdeals: (item, wear) => {
-    const exteriorCode = getExteriorCode(wear, 'csdeals'); // WearCategory0 for FN, etc.
+    const exteriorCode = getExteriorCode(wear, 'csdeals');
     return `https://cs.deals/new/p2p?sort=price&sort_desc=0&name=${encodeURIComponent(item)}&exact_match=1&ref=dadscap&exterior=${exteriorCode}`;
   }
 };
 
 function getWearName(wear) {
-  const map = { fn: 'Factory New', mw: 'Minimal Wear', ft: 'Field-Tested', ww: 'Well-Worn', bs: 'Battle-Scarred', any: '' };
+  const map = {
+    fn: 'Factory New',
+    mw: 'Minimal Wear',
+    ft: 'Field-Tested',
+    ww: 'Well-Worn',
+    bs: 'Battle-Scarred',
+    any: ''
+  };
   return map[wear] || '';
 }
 
@@ -64,7 +72,6 @@ function getFloatRange(wear) {
 }
 
 function getExteriorCode(wear, site) {
-  // Site-specific codes; e.g., white: e0=FN, csdeals: WearCategory0=FN,1=MW,etc.
   if (site === 'white') {
     const codes = { fn: 'e0', mw: 'e1', ft: 'e2', ww: 'e3', bs: 'e4', any: '' };
     return codes[wear] || '';
@@ -78,18 +85,93 @@ function getExteriorCode(wear, site) {
 chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
   if (msg.action === 'startScrape') {
     const { itemName, wear } = msg;
+    if (!itemName) {
+      console.error('[BG] No itemName provided');
+      return;
+    }
+
     const urls = Object.values(marketplaceBuilders).map(builder => builder(itemName, wear));
+    const marketplaceNames = Object.keys(marketplaceBuilders);
+
     let completed = 0;
+
+    console.log(`[BG] Starting scrape for "${itemName}" (${wear}) - ${urls.length} marketplaces`);
+
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
-      const marketplace = Object.keys(marketplaceBuilders)[i]; // For data
+      const marketplace = marketplaceNames[i];
+
       try {
         const tab = await chrome.tabs.create({ url, active: false });
-        // ... (rest of tab logic same, but send marketplace, itemName, wear to content)
-        chrome.tabs.sendMessage(tab.id, { action: 'scrapeThisPage', url, marketplace, itemName, wear });
-      } catch (e) {
-        console.error('Error creating tab:', e);
+        const expectedTabId = tab.id;
+
+        console.log(`[BG] Created tab ${expectedTabId} for ${marketplace} → ${url}`);
+
+        const onTabUpdated = (updatedTabId, changeInfo) => {
+          if (updatedTabId === expectedTabId && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(onTabUpdated);
+
+            console.log(`[BG] Tab ${expectedTabId} reached complete status`);
+
+            // Force inject content script
+            chrome.scripting.executeScript({
+              target: { tabId: expectedTabId },
+              files: ['content.js']
+            })
+            .then(() => {
+              console.log(`[BG] content.js injected into tab ${expectedTabId}`);
+
+              // Send scrape instruction
+              chrome.tabs.sendMessage(expectedTabId, {
+                action: 'scrapeThisPage',
+                url,
+                marketplace,
+                itemName,
+                wear
+              });
+
+              console.log(`[BG] Sent 'scrapeThisPage' to tab ${expectedTabId} (${marketplace})`);
+            })
+            .catch(err => {
+              console.error(`[BG] Failed to inject content.js into tab ${expectedTabId}:`, err);
+              completed++;
+              checkCompletion();
+            });
+
+            // Give plenty of time for scraping (slow sites need this)
+            setTimeout(() => {
+              chrome.tabs.remove(expectedTabId).catch(err => {
+                console.warn(`[BG] Could not remove tab ${expectedTabId}:`, err);
+              });
+            }, 60000); // 60 seconds
+          }
+        };
+
+        chrome.tabs.onUpdated.addListener(onTabUpdated);
+
+      } catch (err) {
+        console.error(`[BG] Failed to create tab for ${marketplace}:`, err);
+        completed++;
+        checkCompletion();
       }
     }
+
+    function checkCompletion() {
+      completed++;
+      if (completed >= urls.length) {
+        console.log('[BG] All tabs processed');
+        chrome.runtime.sendMessage({ action: 'scrapeComplete' });
+      }
+    }
+  }
+});
+
+// Optional: Listen for messages from content.js (success/error reporting)
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.action === 'scrapeError') {
+    console.error(`[CONTENT → BG] Error: ${msg.message} on ${msg.url}`);
+    chrome.runtime.sendMessage(msg); // forward to popup if needed
+  } else if (msg.action === 'scrapeSuccess') {
+    console.log(`[CONTENT → BG] Success on ${msg.url}`);
   }
 });
