@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "CS2 Skin Scraper",
+  "version": "1.0",
+  "permissions": ["tabs", "scripting", "storage"],
+  "host_permissions": [
+    "https://raw.githubusercontent.com/*",
+    "https://steamcommunity.com/*",
+    "https://avan.market/*",
+    "https://www.c5game.com/*",
+    "https://white.market/*",
+    "https://waxpeer.com/*",
+    "https://skinbaron.de/*",
+    "https://shadowpay.com/*",
+    "https://gamerpay.gg/*",
+    "https://cs.money/*",
+    "https://cs.deals/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"],
+    "run_at": "document_end"
+  }]
+}
