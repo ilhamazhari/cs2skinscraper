@@ -1,4 +1,6 @@
-// background.js
+// ────────────────────────────────────────────────
+// Marketplace URL builders
+// ────────────────────────────────────────────────
 
 const marketplaceBuilders = {
   steam: (item, wear) => {
@@ -42,6 +44,10 @@ const marketplaceBuilders = {
   }
 };
 
+// ────────────────────────────────────────────────
+// Helper functions
+// ────────────────────────────────────────────────
+
 function getWearName(wear) {
   const map = {
     fn: 'Factory New',
@@ -51,12 +57,12 @@ function getWearName(wear) {
     bs: 'Battle-Scarred',
     any: ''
   };
-  return map[wear] || '';
+  return map[wear?.toLowerCase()] || '';
 }
 
 function getWearCode(wear) {
   const map = { fn: 'FN', mw: 'MW', ft: 'FT', ww: 'WW', bs: 'BS', any: '' };
-  return map[wear] || '';
+  return map[wear?.toLowerCase()] || '';
 }
 
 function getFloatRange(wear) {
@@ -68,110 +74,71 @@ function getFloatRange(wear) {
     bs: { min: 0.45, max: 1 },
     any: { min: 0, max: 1 }
   };
-  return ranges[wear] || { min: 0, max: 1 };
+  return ranges[wear?.toLowerCase()] || { min: 0, max: 1 };
 }
 
 function getExteriorCode(wear, site) {
+  const w = wear?.toLowerCase() || 'any';
+
   if (site === 'white') {
     const codes = { fn: 'e0', mw: 'e1', ft: 'e2', ww: 'e3', bs: 'e4', any: '' };
-    return codes[wear] || '';
-  } else if (site === 'csdeals') {
-    const codes = { fn: 'WearCategory0', mw: 'WearCategory1', ft: 'WearCategory2', ww: 'WearCategory3', bs: 'WearCategory4', any: '' };
-    return codes[wear] || '';
+    return codes[w] || '';
   }
+
+  if (site === 'csdeals') {
+    const codes = {
+      fn: 'WearCategory0',
+      mw: 'WearCategory1',
+      ft: 'WearCategory2',
+      ww: 'WearCategory3',
+      bs: 'WearCategory4',
+      any: ''
+    };
+    return codes[w] || '';
+  }
+
   return '';
 }
 
-chrome.runtime.onMessage.addListener(async (msg, sender, sendResponse) => {
-  if (msg.action === 'startScrape') {
-    const { itemName, wear } = msg;
-    if (!itemName) {
-      console.error('[BG] No itemName provided');
-      return;
+// ────────────────────────────────────────────────
+// Message listener (only needed for URL generation now)
+// ────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'generateUrls') {
+    const { itemName, wear } = message;
+
+    if (!itemName || typeof itemName !== 'string' || itemName.trim() === '') {
+      sendResponse({ success: false, error: 'Invalid or missing item name' });
+      return true;
     }
 
-    const urls = Object.values(marketplaceBuilders).map(builder => builder(itemName, wear));
-    const marketplaceNames = Object.keys(marketplaceBuilders);
+    try {
+      const urls = Object.values(marketplaceBuilders).map(builder =>
+        builder(itemName.trim(), wear || 'any')
+      );
 
-    let completed = 0;
+      console.log(`[background.js] Generated ${urls.length} URLs for "${itemName}" (${wear || 'any'})`);
 
-    console.log(`[BG] Starting scrape for "${itemName}" (${wear}) - ${urls.length} marketplaces`);
-
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i];
-      const marketplace = marketplaceNames[i];
-
-      try {
-        const tab = await chrome.tabs.create({ url, active: false });
-        const expectedTabId = tab.id;
-
-        console.log(`[BG] Created tab ${expectedTabId} for ${marketplace} → ${url}`);
-
-        const onTabUpdated = (updatedTabId, changeInfo) => {
-          if (updatedTabId === expectedTabId && changeInfo.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(onTabUpdated);
-
-            console.log(`[BG] Tab ${expectedTabId} reached complete status`);
-
-            // Force inject content script
-            chrome.scripting.executeScript({
-              target: { tabId: expectedTabId },
-              files: ['content.js']
-            })
-            .then(() => {
-              console.log(`[BG] content.js injected into tab ${expectedTabId}`);
-
-              // Send scrape instruction
-              chrome.tabs.sendMessage(expectedTabId, {
-                action: 'scrapeThisPage',
-                url,
-                marketplace,
-                itemName,
-                wear
-              });
-
-              console.log(`[BG] Sent 'scrapeThisPage' to tab ${expectedTabId} (${marketplace})`);
-            })
-            .catch(err => {
-              console.error(`[BG] Failed to inject content.js into tab ${expectedTabId}:`, err);
-              completed++;
-              checkCompletion();
-            });
-
-            // Give plenty of time for scraping (slow sites need this)
-            setTimeout(() => {
-              chrome.tabs.remove(expectedTabId).catch(err => {
-                console.warn(`[BG] Could not remove tab ${expectedTabId}:`, err);
-              });
-            }, 60000); // 60 seconds
-          }
-        };
-
-        chrome.tabs.onUpdated.addListener(onTabUpdated);
-
-      } catch (err) {
-        console.error(`[BG] Failed to create tab for ${marketplace}:`, err);
-        completed++;
-        checkCompletion();
-      }
+      sendResponse({
+        success: true,
+        urls,
+        count: urls.length,
+        itemName: itemName.trim(),
+        wear: wear || 'any'
+      });
+    } catch (err) {
+      console.error('[background.js] Error generating URLs:', err);
+      sendResponse({ success: false, error: err.message });
     }
 
-    function checkCompletion() {
-      completed++;
-      if (completed >= urls.length) {
-        console.log('[BG] All tabs processed');
-        chrome.runtime.sendMessage({ action: 'scrapeComplete' });
-      }
-    }
+    return true; // Keep the message channel open for async sendResponse
   }
+
+  // Unknown action
+  sendResponse({ success: false, error: 'Unknown action' });
+  return true;
 });
 
-// Optional: Listen for messages from content.js (success/error reporting)
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.action === 'scrapeError') {
-    console.error(`[CONTENT → BG] Error: ${msg.message} on ${msg.url}`);
-    chrome.runtime.sendMessage(msg); // forward to popup if needed
-  } else if (msg.action === 'scrapeSuccess') {
-    console.log(`[CONTENT → BG] Success on ${msg.url}`);
-  }
-});
+// Optional: log when service worker starts / wakes up
+console.log('[background.js] Service worker initialized at', new Date().toISOString());

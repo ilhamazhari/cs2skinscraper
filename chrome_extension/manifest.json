@@ -2,9 +2,10 @@
   "manifest_version": 3,
   "name": "CS2 Skin Scraper",
   "version": "1.0",
-  "permissions": ["tabs", "scripting", "storage"],
+  "permissions": ["tabs", "scripting", "storage", "activeTab"],
   "host_permissions": [
     "https://raw.githubusercontent.com/*",
+    "http://localhost:3000/*",
     "https://steamcommunity.com/*",
     "https://avan.market/*",
     "https://www.c5game.com/*",
